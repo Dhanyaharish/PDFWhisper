@@ -41,8 +41,8 @@ def chunk_documents(documents, size=100, overlap=20):
             number += 1
     if not chunks:
         raise ValueError('No readable text. Scanned PDFs need OCR first.')
-    if len(chunks) > 500:
-        raise ValueError('Workshop limit: 500 chunks. Use fewer or shorter documents.')
+    if len(chunks) > 3000:
+        raise ValueError('Workshop limit: 3000 chunks. Use fewer or shorter documents.')
     return chunks
 
 def tokens(text):

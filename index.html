@@ -1,30 +1,798 @@
 <!doctype html>
-<html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Campus Handbook Assistant</title>
-<style>
-body{margin:0;background:#f3f6fa;color:#172435;font:16px/1.6 system-ui,sans-serif}main{max-width:1100px;margin:auto;padding:32px}h1{font-size:34px;line-height:1.2;margin-bottom:8px}h2{font-size:22px;margin-top:0}small{color:#53677d}.grid{display:grid;grid-template-columns:330px 1fr;gap:24px;margin-top:24px}.card{background:white;padding:24px;border:1px solid #dbe2eb;border-radius:12px;margin-bottom:20px}label{display:block;margin:14px 0 5px}select,input,textarea,button{font:inherit;box-sizing:border-box;max-width:100%}select,input,textarea{width:100%;padding:8px;border:1px solid #a4b1c2;border-radius:5px}textarea{min-height:95px}button{cursor:pointer;background:#144f78;border:0;border-radius:6px;color:white;padding:10px 15px;margin:12px 8px 0 0}button:disabled{opacity:.5;cursor:wait}pre,.answer{white-space:pre-wrap;overflow-wrap:anywhere}.answer{font-size:18px}pre{font-size:13px;background:#f3f6fa;padding:12px;max-height:400px;overflow:auto}.note{border-left:4px solid #ce8800;padding-left:14px}#status{min-height:26px;font-weight:600}summary{cursor:pointer}article{border-top:1px solid #dbe2eb;padding:14px 0}article p{margin-bottom:0}@media(max-width:800px){.grid{grid-template-columns:1fr}main{padding:16px}}
-</style>
-<main><small>RAG FROM SCRATCH · STUDENT LAB</small><h1>Campus Handbook Assistant</h1>
-<p>Load documents → split into chunks → retrieve evidence → generate a cited answer.</p>
-<p class="note">Sample policies are fictional teaching data, not VCET rules. Source labels and scores are aids for inspection; they do not prove an answer is correct.</p>
-<div class="grid"><section><div class="card"><h2>1. Build your index</h2>
-<label for="files">Your documents (optional)</label><input id="files" type="file" multiple accept=".txt,.md,.pdf"><small>UTF-8 text or text-based PDF; under 5 MB total. No OCR.</small>
-<label for="mode">Retrieval method</label><select id="mode"><option value="keyword">TF-IDF baseline · no model needed</option><option value="semantic">Semantic embeddings · Ollama needed</option></select>
-<label for="size">Chunk size in words</label><input id="size" type="number" min="20" max="200" value="100">
-<label for="overlap">Overlap in words</label><input id="overlap" type="number" min="0" max="199" value="20">
-<button id="sample">Build sample index</button><button id="upload">Index selected files</button>
-<details><summary>Index preview</summary><pre id="preview">Build an index to see the chunks.</pre></details></div>
-<div class="card"><h2>2. Choose an experiment</h2><label for="answer_mode">Answer mode</label><select id="answer_mode"><option value="evidence">Evidence only · retrieval, no generation</option><option value="rag">RAG · evidence + local LLM</option><option value="plain">LLM only · evidence withheld</option></select>
-<label for="model">Generation model</label><select id="model"><option>qwen2.5:1.5b</option><option>qwen2.5:0.5b</option></select>
-<label for="k">Top k passages</label><input id="k" type="number" min="1" max="5" value="3"><small>Changing retrieval method or chunk settings requires rebuilding the index. The app uses the last built index.</small></div></section>
-<section><div class="card"><h2>3. Ask and inspect</h2><label for="question">Question</label><textarea id="question">How many books can a third year student borrow, and for how long?</textarea><button id="ask">Ask</button><p id="status" role="status" aria-live="polite"></p><div id="answer" class="answer"></div></div>
-<div class="card"><h2>Retrieved evidence</h2><small>For LLM-only mode, these passages are shown for comparison but are not sent to the LLM.</small><div id="sources"></div><details><summary>Inspect the exact user prompt</summary><pre id="prompt"></pre></details><p><small>The RAG system instruction is visible as SYSTEM in rag.py. The prompt above is the user message.</small></p><pre id="checks"></pre></div></section></div>
-<small>Local single-user demo · no account or API key · restart clears the in-memory index</small></main>
 <script>
-const $=id=>document.getElementById(id);let indexed=false;
-async function api(path,body){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error(d.error||'Request failed');return d;}
-async function job(fn){document.querySelectorAll('button').forEach(b=>b.disabled=true);$('status').textContent='Working… Model requests can take several minutes on CPU.';try{await fn()}catch(e){$('status').textContent=e.message}finally{document.querySelectorAll('button').forEach(b=>b.disabled=false)}}
-async function index(sample){indexed=false;$('answer').textContent='';$('sources').replaceChildren();$('prompt').textContent='';$('checks').textContent='';await job(async()=>{let files=[];if(!sample){const chosen=[...$('files').files];if(!chosen.length)throw Error('Select documents first.');if(chosen.reduce((s,f)=>s+f.size,0)>5000000)throw Error('Keep files below 5 MB total.');for(const f of chosen){const bytes=new Uint8Array(await f.arrayBuffer());let bin='';for(const b of bytes)bin+=String.fromCharCode(b);files.push({name:f.name,data:btoa(bin)})}}const d=await api('/api/index',{sample,files,mode:$('mode').value,size:Number($('size').value),overlap:Number($('overlap').value)});indexed=true;$('preview').textContent=JSON.stringify(d.preview,null,2);$('status').textContent=`Built ${d.chunks} chunks using ${d.mode} retrieval in ${d.seconds}s. ${d.warnings.join(' ')}`})}
-$('sample').onclick=()=>index(true);$('upload').onclick=()=>index(false);
-$('ask').onclick=()=>job(async()=>{if(!indexed)throw Error('Build an index first.');const d=await api('/api/ask',{question:$('question').value,k:Number($('k').value),answer_mode:$('answer_mode').value,model:$('model').value});$('answer').textContent=d.answer;$('prompt').textContent=d.prompt;$('checks').textContent=d.citations?JSON.stringify(d.citations,null,2)+'\nLabel syntax only; manually verify support for each claim.':'';$('sources').replaceChildren();for(const h of d.hits){const a=document.createElement('article'),b=document.createElement('strong'),p=document.createElement('p');b.textContent=`[${h.label}] ${h.source} · page ${h.page} · chunk ${h.chunk} · cosine ${h.score}`;p.textContent=h.text;a.append(b,p);$('sources').append(a)}$('status').textContent=`${d.answer_mode} mode · ${d.seconds}s. Similarity is not confidence.`});
-</script></html>
+(function(){var t=null;try{t=localStorage.getItem('theme')}catch(e){}
+if(t!=='dark'&&t!=='light'){t=window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'}
+document.documentElement.setAttribute('data-theme',t)})();
+</script>
+<style>
+:root{
+  color-scheme:light;
+  --bg:#8DACFF;--text:#0b1b3a;--muted:#12285a;--card:#ffffff;--border:#dbe2eb;
+  --input-bg:#ffffff;--input-border:#a4b1c2;--soft:#f3f6fa;--sys:#53677d;
+  --accent:#2563EB;--accent-hover:#1D4ED8;--on-accent:#ffffff;--link:#2563EB;
+  --soft-btn-bg:#e6eef7;--soft-btn-text:#1D4ED8;--chip-bg:#e6edff;--chip-border:#b8c9ff;
+  --err-bg:#fdeeee;--err-border:#e3b1b1;--shadow:rgba(23,36,53,.25);
+}
+:root[data-theme="dark"]{
+  color-scheme:dark;
+  --bg:#0b1220;--text:#e8eefb;--muted:#b9c6de;--card:#141e33;--border:#2c3d5c;
+  --input-bg:#0e1728;--input-border:#5a6f94;--soft:#1b2842;--sys:#aebcd6;
+  --accent:#2563EB;--accent-hover:#3b7bff;--on-accent:#ffffff;--link:#93b4ff;
+  --soft-btn-bg:#24335a;--soft-btn-text:#b3c9ff;--chip-bg:#1f2f56;--chip-border:#3d57a0;
+  --err-bg:#3b1b21;--err-border:#85404b;--shadow:rgba(0,0,0,.6);
+}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,sans-serif}
+main{max-width:1100px;margin:auto;padding:32px}
+h1{font-size:34px;line-height:1.2;margin-bottom:8px}
+h2{font-size:22px;margin-top:0}
+small{color:var(--muted)}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-top:24px;align-items:start}
+.card{background:var(--card);padding:24px;border:1px solid var(--border);border-radius:12px;margin-bottom:20px}
+label{display:block;margin:14px 0 5px}
+select,input,textarea,button{font:inherit;box-sizing:border-box;max-width:100%}
+select,input,textarea{width:100%;padding:8px;background:var(--input-bg);color:var(--text);border:1px solid var(--input-border);border-radius:5px}
+::placeholder{color:var(--sys);opacity:1}
+button{cursor:pointer;background:var(--accent);border:0;border-radius:6px;color:var(--on-accent);padding:10px 15px;margin:12px 8px 0 0}
+button:hover:not(:disabled){background:var(--accent-hover)}
+button:disabled{opacity:.5;cursor:wait}
+button.light{background:var(--soft-btn-bg);color:var(--soft-btn-text)}
+button.light:hover:not(:disabled){background:var(--soft-btn-bg);filter:brightness(.95)}
+:focus-visible{outline:3px solid var(--link);outline-offset:2px}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;background:var(--soft);padding:12px;max-height:300px;overflow:auto}
+.note{border-left:4px solid var(--accent);padding-left:14px}
+#status{min-height:26px;font-weight:600}
+summary{cursor:pointer}
+
+/* Theme switch */
+#theme{display:flex;align-items:center;gap:10px;margin:0;padding:6px 14px 6px 8px;border-radius:999px;
+  background:var(--card);color:var(--text);border:1px solid var(--border);font-size:14px;font-weight:600}
+#theme:hover:not(:disabled){background:var(--card);filter:brightness(.97)}
+#theme .track{position:relative;width:44px;height:24px;border-radius:999px;background:#9fb3d9;flex:none;transition:background-color .3s}
+#theme .thumb{position:absolute;top:2px;left:2px;width:20px;height:20px;border-radius:50%;background:#fff;
+  display:flex;align-items:center;justify-content:center;font-size:12px;line-height:1;transition:transform .3s}
+#theme .thumb::before{content:"\2600"; color:#d98a00}
+:root[data-theme="dark"] #theme .track{background:var(--accent)}
+:root[data-theme="dark"] #theme .thumb{transform:translateX(20px)}
+:root[data-theme="dark"] #theme .thumb::before{content:"\263E"; color:#1d3566}
+
+/* Floating chat button */
+#fab{position:fixed;right:24px;bottom:24px;width:60px;height:60px;padding:0;margin:0;border-radius:50%;
+  background:var(--accent);color:white;box-shadow:0 6px 18px rgba(37,99,235,.5);display:flex;align-items:center;
+  justify-content:center;z-index:20;transition:transform .15s,background-color .3s}
+#fab:hover:not(:disabled){transform:scale(1.07)}
+#fab svg{width:28px;height:28px;fill:white}
+#fab .x{display:none}
+body.chat-open #fab .open-icon{display:none}
+body.chat-open #fab .x{display:block}
+
+/* Chat panel */
+#chatpanel{position:fixed;right:24px;bottom:96px;width:400px;max-width:calc(100vw - 32px);
+  height:min(620px,calc(100vh - 120px));background:var(--card);border:1px solid var(--border);border-radius:16px;
+  box-shadow:0 12px 40px var(--shadow);display:none;flex-direction:column;overflow:hidden;z-index:19}
+body.chat-open #chatpanel{display:flex}
+#chathead{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--accent);color:white}
+#chathead h2{font-size:17px;margin:0;flex:1}
+#back,#expand{margin:0;padding:6px 12px;background:rgba(255,255,255,.18);color:white;border-radius:999px;font-size:14px}
+#expand{padding:6px 10px}
+#back:hover:not(:disabled),#expand:hover:not(:disabled){background:rgba(255,255,255,.3)}
+#grip{position:absolute;left:0;top:0;width:26px;height:26px;cursor:nwse-resize;z-index:2;touch-action:none;
+  background:linear-gradient(135deg,rgba(255,255,255,.7) 0 2px,transparent 2px 6px,rgba(255,255,255,.7) 6px 8px,transparent 8px)}
+.bot p{margin:0 0 .7em}
+.bot p:last-child{margin-bottom:0}
+.bot a{color:var(--link);font-weight:600;text-decoration:underline;overflow-wrap:anywhere}
+#messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:12px;padding:14px}
+.msg{max-width:88%;padding:10px 14px;border-radius:14px;white-space:pre-wrap;overflow-wrap:anywhere}
+.bot.answer{white-space:normal}
+.user{align-self:flex-end;background:var(--accent);color:white;border-bottom-right-radius:4px}
+.bot{align-self:flex-start;background:var(--soft);border:1px solid var(--border);border-bottom-left-radius:4px}
+.bot.error{background:var(--err-bg);border-color:var(--err-border)}
+.sys{align-self:center;color:var(--sys);font-size:14px;text-align:center;padding:4px 8px}
+.msg details{white-space:normal;font-size:14px;margin-top:8px}
+.msg article{border-top:1px solid var(--border);padding:8px 0}
+.msg article p{margin:4px 0 0}
+.meta{font-size:12px;color:var(--sys);margin-top:6px}
+#chatform{display:flex;gap:8px;align-items:flex-end;border-top:1px solid var(--border);padding:12px}
+#question{min-height:48px;max-height:140px;resize:vertical}
+#chatform button{margin:0}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;white-space:normal}
+.chips button{margin:0;padding:6px 12px;font-size:13px;border-radius:999px;background:var(--chip-bg);color:var(--link);border:1px solid var(--chip-border)}
+.chips button:hover:not(:disabled){background:var(--accent);color:white;border-color:var(--accent)}
+
+
+/* ---- Creative layer: steps, toolbar, X-Ray, compare, chunk map ---- */
+.steps{list-style:none;display:flex;flex-wrap:wrap;gap:8px;padding:0;margin:14px 0 4px}
+.steps li{display:flex;align-items:center;gap:8px;padding:6px 14px 6px 8px;border-radius:999px;background:var(--card);color:var(--text);border:1px solid var(--border);font-size:14px;font-weight:600}
+.steps .n{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--soft);color:var(--text);font-size:13px}
+.steps li.active{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.3)}
+.steps li.active .n{background:var(--accent);color:#fff}
+.steps li.done .n{background:#0B7F5D;color:#fff;font-size:0}
+.steps li.done .n::before{content:"\2713";font-size:14px}
+
+#toolbar{display:flex;gap:6px;flex-wrap:wrap;padding:8px 12px;border-bottom:1px solid var(--border);background:var(--card)}
+#toolbar button{margin:0;padding:5px 11px;font-size:13px;border-radius:999px;background:var(--soft-btn-bg);color:var(--soft-btn-text);border:1px solid transparent}
+#toolbar button:hover:not(:disabled){filter:brightness(.94)}
+#toolbar button[aria-pressed="true"]{background:var(--accent);color:#fff}
+
+@keyframes ring{0%{box-shadow:0 0 0 0 rgba(37,99,235,.75)}100%{box-shadow:0 0 0 24px rgba(37,99,235,0)}}
+body.nudge:not(.chat-open) #fab{animation:ring 1.6s ease-out infinite}
+#nudge{position:fixed;right:96px;bottom:36px;padding:8px 14px;border-radius:999px;background:var(--card);color:var(--text);border:2px solid var(--accent);font-weight:600;font-size:14px;display:none;z-index:20;box-shadow:0 6px 18px var(--shadow)}
+body.nudge:not(.chat-open) #nudge{display:block}
+
+.xray{margin-top:10px;padding:10px;border:1px dashed var(--accent);border-radius:10px;background:var(--card);font-size:13px;white-space:normal}
+.xr-title{font-weight:700;margin-bottom:6px}
+.kws{display:flex;flex-wrap:wrap;gap:4px;margin:4px 0 8px;align-items:center}
+.kw{padding:1px 8px;border-radius:999px;font-size:12px;border:1px solid var(--chip-border);background:var(--chip-bg);color:var(--link)}
+.kw.miss{opacity:.65;text-decoration:line-through}
+.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-weight:700;font-size:12px;color:#fff}
+.badge.strong{background:#0B7F5D}.badge.some{background:#B45309}.badge.weak{background:#B42318}
+.xr-note{color:var(--sys);font-size:12px;margin:4px 0 8px}
+.xr-chunk{border-top:1px solid var(--border);padding:5px 0}
+.xr-chunk summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer}
+.xr-chunk summary::-webkit-details-marker{display:none}
+.bar-track{flex:1;height:10px;border-radius:999px;background:var(--soft);overflow:hidden}
+.bar-fill{height:100%;border-radius:999px;transition:width .5s ease}
+.score{font-variant-numeric:tabular-nums;min-width:44px;text-align:right;color:var(--sys)}
+.xr-body{padding:6px 0 4px 28px}
+.xr-meta{color:var(--sys);font-size:12px;margin-bottom:2px}
+mark{background:#FFE08A;color:#1b1500;border-radius:3px;padding:0 2px}
+.flash{animation:flash 1s}
+@keyframes flash{from{background:rgba(37,99,235,.3)}to{background:transparent}}
+.dot{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin:0 2px;padding:0;border-radius:50%;color:#fff;font-size:11px;font-weight:700;position:relative;top:-1px;border:0}
+.dot:hover:not(:disabled){filter:brightness(1.2)}
+.nm{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;color:#fff;font-size:12px;font-weight:700;flex:none}
+#tip{position:fixed;display:none;z-index:40;max-width:290px;padding:8px 10px;border-radius:8px;background:#0b1220;color:#e8eefb;font-size:12.5px;line-height:1.4;box-shadow:0 6px 20px rgba(0,0,0,.4);pointer-events:none;border:1px solid #3d57a0}
+
+.msg.compare{max-width:100%;align-self:stretch}
+.cmp{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;white-space:normal}
+.cmp>div{border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--card)}
+.cmp h4{margin:0 0 6px;font-size:13px}
+.cmp .miss{color:var(--sys);font-style:italic}
+button.copy{margin:6px 0 0;padding:2px 10px;font-size:12px;border-radius:999px;background:transparent;color:var(--link);border:1px solid var(--chip-border)}
+button.copy:hover:not(:disabled){background:var(--chip-bg)}
+
+#chunkmap{display:flex;gap:4px;margin:8px 0}
+.cblock{margin:0;padding:10px 0;min-width:28px;flex-basis:0;border-radius:6px;color:#fff;font-weight:700;font-size:13px;border:0}
+#chunktext{background:var(--soft);padding:10px;border-radius:8px;font-size:14px;min-height:60px;max-height:200px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+.starters{text-align:center}
+.starters .chips{justify-content:center}
+@media(prefers-reduced-motion:reduce){body.nudge #fab,.flash{animation:none}}
+
+/* Smooth theme change */
+body,.card,#chatpanel,.msg,select,input,textarea,pre,button,#chatform,#messages,#theme .track,#theme .thumb{
+  transition:background-color .3s ease,color .3s ease,border-color .3s ease,transform .3s ease}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+
+@media(max-width:800px){
+  .grid{grid-template-columns:1fr}main{padding:16px}
+  #chatpanel{right:0;bottom:0;width:100vw;max-width:100vw;height:100vh;border-radius:0}
+  body.chat-open #fab{display:none}
+}
+</style>
+</head>
+<body>
+<main>
+<div class="top">
+  <small>RAG FROM SCRATCH · STUDENT LAB</small>
+  <button id="theme" type="button" role="switch" aria-checked="false" aria-label="Dark mode">
+    <span class="track"><span class="thumb"></span></span><span id="themeLabel">Dark mode</span>
+  </button>
+</div>
+<h1>Campus Handbook Assistant</h1>
+<p>Load documents → split into chunks → retrieve evidence → open the Interactive Guide bubble and get answers.</p>
+<ol class="steps" id="steps" aria-label="How to use this page">
+  <li><span class="n">1</span>Build the index</li>
+  <li><span class="n">2</span>Open the Interactive Guide</li>
+  <li><span class="n">3</span>Ask a question</li>
+</ol>
+<p class="note">Sample policies are fictional teaching data, not VCET rules. Source labels and scores are aids for inspection; they do not prove an answer is correct.</p>
+ 
+<div class="grid">
+  <div class="card">
+    <h2>1. Build your index</h2>
+    <label for="files">Your documents (optional)</label>
+    <input id="files" type="file" multiple accept=".txt,.md,.pdf,.png,.jpg,.jpeg,.webp">
+    <small>UTF-8 text, text-based PDF, or image (PNG/JPG/WEBP); under 5 MB total. Images need a vision model in Ollama. No OCR for scanned PDFs.</small>
+    <label for="mode">Retrieval method</label>
+    <select id="mode">
+      <option value="keyword">TF-IDF baseline · no model needed</option>
+      <option value="semantic">Semantic embeddings · Ollama needed</option>
+    </select>
+    <label for="size">Chunk size in words</label>
+    <input id="size" type="number" min="20" max="200" value="100">
+    <label for="overlap">Overlap in words</label>
+    <input id="overlap" type="number" min="0" max="199" value="20">
+    <button id="sample">Build sample index</button><button id="upload">Index selected files</button>
+    <p id="status" role="status" aria-live="polite"></p>
+    <details open><summary>Chunk map</summary>
+      <div id="chunkmap" aria-label="Chunks of your documents"></div>
+      <div id="chunktext" aria-live="polite">Build an index to see your document split into chunks.</div>
+      <small id="chunkinfo"></small>
+      <details><summary>Raw JSON</summary><pre id="preview">Build an index to see the chunks.</pre></details>
+    </details>
+  </div>
+ 
+  <div class="card">
+    <h2>2. Choose an experiment</h2>
+    <label for="answer_mode">Answer mode</label>
+    <select id="answer_mode">
+      <option value="rag">RAG · evidence + local LLM</option>
+      <option value="evidence">Evidence only · retrieval, no generation</option>
+      <option value="plain">LLM only · evidence withheld</option>
+    </select>
+    <label for="model">Generation model</label>
+    <select id="model"><option>qwen2.5:1.5b</option><option>qwen2.5:0.5b</option></select>
+    <label for="k">Top k passages</label>
+    <input id="k" type="number" min="1" max="5" value="3">
+    <small>Changing retrieval method or chunk settings requires rebuilding the index. The app uses the last built index.</small>
+  </div>
+</div>
+ 
+<small>Local single-user demo · no account or API key · restart clears the in-memory index</small>
+</main>
+ 
+<!-- Floating round chat button -->
+<button id="fab" type="button" aria-label="Open Interactive Guide" title="Interactive Guide" aria-expanded="false" aria-controls="chatpanel">
+  <svg class="open-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H9l-5 4v-4H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/></svg>
+  <svg class="x" viewBox="0 0 24 24" aria-hidden="true"><path d="M6.4 5l5.6 5.6L17.6 5 19 6.4 13.4 12 19 17.6 17.6 19 12 13.4 6.4 19 5 17.6 10.6 12 5 6.4z"/></svg>
+</button>
+<span id="nudge" aria-hidden="true">Ask me here! 👉</span>
+<div id="tip" role="tooltip"></div>
+ 
+<!-- Chat panel -->
+<section id="chatpanel" role="dialog" aria-label="Interactive Guide">
+  <div id="chathead">
+    <button id="back" type="button" aria-label="Back to the beginning">← Back</button>
+    <h2>Interactive Guide</h2>
+    <button id="expand" type="button" aria-label="Make Interactive Guide bigger" title="Bigger / smaller">⤢</button>
+  </div>
+  <div id="grip" title="Drag to resize"></div>
+  <div id="toolbar" role="toolbar" aria-label="Guide tools">
+    <button id="tx" type="button" aria-pressed="false" title="Show how each answer was found">🔬 X-Ray</button>
+    <button id="tc" type="button" aria-pressed="false" title="Answer twice: with and without your documents">⚔ Compare</button>
+    <button id="tex" type="button" title="Download this chat as a Markdown file">⬇ Export</button>
+  </div>
+  <div id="messages" aria-live="polite"></div>
+  <form id="chatform">
+    <textarea id="question" placeholder="Ask a question… (Enter to send, Shift+Enter for new line)"></textarea>
+    <button id="send" type="submit">Send</button>
+    <button id="clear" type="button" class="light">Clear</button>
+  </form>
+</section>
+ 
+<script>
+const $ = id => document.getElementById(id);
+const turns = [];      // chat memory: [{q, a}, ...] sent with each question
+let indexed = false;
+let topics = [];       // suggested topics taken from the indexed text
+
+// Theme: persisted in localStorage, applied as data-theme on <html>
+function applyTheme(t) {
+  document.documentElement.setAttribute('data-theme', t);
+  $('theme').setAttribute('aria-checked', String(t === 'dark'));
+  $('themeLabel').textContent = t === 'dark' ? 'Dark mode' : 'Light mode';
+  try { localStorage.setItem('theme', t); } catch (e) {}
+}
+$('theme').onclick = () => applyTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+(function () {
+  const t = document.documentElement.getAttribute('data-theme') || 'light';
+  $('theme').setAttribute('aria-checked', String(t === 'dark'));
+  $('themeLabel').textContent = t === 'dark' ? 'Dark mode' : 'Light mode';
+})();
+ 
+function setChat(open) {
+  document.body.classList.toggle('chat-open', open);
+  $('fab').setAttribute('aria-expanded', open);
+  $('fab').setAttribute('aria-label', open ? 'Close Interactive Guide' : 'Open Interactive Guide');
+  if (open) {
+    state.opened = true; updateSteps();
+    $('messages').scrollTop = $('messages').scrollHeight;
+    $('question').focus();
+  }
+}
+$('fab').onclick = () => setChat(!document.body.classList.contains('chat-open'));
+// Back: close the chat and return to the beginning of the page (index builder)
+$('back').onclick = () => { setChat(false); window.scrollTo({top: 0, behavior: 'smooth'}); };
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('chat-open')) setChat(false);
+});
+ 
+async function api(path, body) {
+  const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                               body: JSON.stringify(body || {})});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || 'Request failed');
+  return d;
+}
+ 
+function say(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  d.textContent = text;
+  $('messages').append(d);
+  $('messages').scrollTop = $('messages').scrollHeight;
+  return d;
+}
+ 
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => resolve(fr.result.split(',')[1]);
+    fr.onerror = () => reject(new Error('Could not read ' + file.name));
+    fr.readAsDataURL(file);
+  });
+}
+ 
+async function buildIndex(sample) {
+  indexed = false; state.asked = false; updateSteps();
+  const buttons = [$('sample'), $('upload'), $('send')];
+  buttons.forEach(b => b.disabled = true);
+  $('status').textContent = 'Working… images and embeddings can take a few minutes on CPU.';
+  try {
+    const files = [];
+    if (!sample) {
+      const chosen = [...$('files').files];
+      if (!chosen.length) throw new Error('Select documents first.');
+      if (chosen.reduce((s, f) => s + f.size, 0) > 5000000) throw new Error('Keep files below 5 MB total.');
+      for (const f of chosen) files.push({name: f.name, data: await readFile(f)});
+    }
+    const d = await api('/api/index', {sample, files, mode: $('mode').value,
+                                       size: Number($('size').value), overlap: Number($('overlap').value)});
+    indexed = true;
+    turns.length = 0;
+    $('preview').textContent = JSON.stringify(d.preview, null, 2);
+    renderChunkMap(d);
+    topics = (d.preview || []).map(c => keywordsOf(c.text)).filter(Boolean);
+    $('status').textContent = `Built ${d.chunks} chunks using ${d.mode} retrieval in ${d.seconds}s. ` + d.warnings.join(' ') +
+                              ' Click the Interactive Guide bubble (bottom right) to ask questions.';
+    say('sys', `Index ready: ${d.chunks} chunks. Ask me anything about your documents.`);
+    showStarters(); updateSteps();
+  } catch (e) {
+    $('status').textContent = e.message;
+  } finally {
+    buttons.forEach(b => b.disabled = false);
+  }
+}
+ 
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+ 
+function dontKnow(d) {
+  if (d.answer_mode === 'plain') return false;
+  if (/don'?t know|do not know|no keyword overlap|no matching words|not (?:in|found in) (?:the|these) documents/i.test(d.answer)) return true;
+  return !d.hits || !d.hits.length || d.hits.every(h => !(h.score > 0));
+}
+
+function chip(label, fn) {
+  const b = document.createElement('button');
+  b.type = 'button'; b.textContent = label; b.onclick = fn;
+  return b;
+}
+
+// Interactive fallback: offer next steps instead of sources
+function offerHelp(bot, q) {
+  bot.textContent = "I couldn't find that in your documents, but I can still help. What would you like to do?";
+  const row = document.createElement('div');
+  row.className = 'chips';
+  row.append(
+    chip('Answer from general knowledge', () => { row.remove(); ask(q, 'plain', true); }),
+    chip('Let me rephrase', () => { $('question').value = q; $('question').focus(); }),
+  );
+  for (const t of topics.slice(0, 3)) {
+    row.append(chip('Ask about: ' + t, () => { row.remove(); ask('Tell me about ' + t); }));
+  }
+  bot.append(row);
+}
+
+// ---- Answer rendering: clean paragraphs, clickable links, no source footer ----
+const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"'\])]+)/gi;
+const STOP = new Set('what when where which who whom whose how why does did the and for are was were with from that this these those have has had can could should would about into your you tell give need want please there their them then than also any'.split(' '));
+
+function splitUrl(raw) {                 // keep trailing punctuation out of the link
+  const m = raw.match(/[.,;:!?]+$/);
+  return m ? [raw.slice(0, -m[0].length), m[0]] : [raw, ''];
+}
+const normUrl = u => u.replace(/^https?:\/\//i, '').replace(/^www\./i, '').replace(/\/+$/, '').toLowerCase();
+
+function appendLinked(parent, text) {    // text -> text nodes + <a> links (no innerHTML)
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    const [url, tail] = splitUrl(m[1]);
+    parent.append(text.slice(last, m.index));
+    const a = document.createElement('a');
+    a.href = /^www\./i.test(url) ? 'https://' + url : url;
+    a.textContent = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    parent.append(a, tail);
+    last = m.index + m[1].length;
+  }
+  parent.append(text.slice(last));
+}
+
+function cleanAnswer(text, hits) {
+  let t = String(text || '');
+  for (const h of hits || []) if (h.label) t = t.split('[' + h.label + ']').join('');
+  t = t.replace(/\s?\[\s*[A-Za-z]{0,2}\d+(?:\s*,\s*[A-Za-z]{0,2}\d+)*\s*\]/g, '');   // [1], [S2], [1, 2]
+  t = t.replace(/\n+\s*(?:sources?|references?|citations?)\s*:[\s\S]*$/i, '');          // trailing "Sources:" block
+  return t.replace(/[ \t]+\n/g, '\n').replace(/ +([.,;:!?])/g, '$1').trim();
+}
+
+// URLs found in the retrieved PDF text that sit near words from the question
+function relevantLinks(q, hits, answer) {
+  const words = (q.toLowerCase().match(/[a-z0-9]{4,}/g) || []).filter(w => !STOP.has(w));
+  const asksLink = /\b(link|links|url|website|site|portal|register|registration|apply|download|form)\b/i.test(q);
+  const have = new Set([...answer.matchAll(URL_RE)].map(m => normUrl(splitUrl(m[1])[0])));
+  const found = new Map();
+  (hits || []).forEach((h, order) => {
+    const text = String(h.text || '');
+    let prevEnd = 0;
+    for (const m of text.matchAll(URL_RE)) {
+      const url = splitUrl(m[1])[0], key = normUrl(url);
+      const from = Math.max(prevEnd, m.index - 110);   // only text after the previous link
+      prevEnd = m.index + m[1].length;
+      if (have.has(key)) continue;
+      const ctx = text.slice(from, m.index + m[1].length + 40).replace(URL_RE, ' ').toLowerCase();
+      let score = words.filter(w => ctx.includes(w)).length;
+      if (asksLink && order === 0) score += 1;
+      if (score < 1) continue;
+      const prev = found.get(key);
+      if (!prev || score > prev.score) found.set(key, {url, score, order});
+    }
+  });
+  return [...found.values()].sort((a, b) => b.score - a.score || a.order - b.order).slice(0, 3).map(x => x.url);
+}
+
+function renderAnswer(bot, d, q) {
+  const hits = d.hits || [];
+  let text = d.answer_mode === 'evidence'
+    ? hits.filter(h => h.score > 0).map(h => String(h.text || '').trim()).join('\n\n')   // retrieval-only: show the passages as text
+    : cleanAnswer(d.answer, hits);
+  if (!text) text = cleanAnswer(d.answer, hits);
+  if (d.answer_mode !== 'plain' && d.answer_mode !== 'evidence') {
+    const links = relevantLinks(q, hits, text);
+    if (links.length) {   // weave the link(s) into the closing sentence of the paragraph
+      text += (/[.!?]$/.test(text) ? ' ' : '. ') +
+              (links.length === 1 ? 'You can find it here: ' + links[0]
+                                  : 'You can find more here: ' + links.join(', '));
+    }
+  }
+  bot.textContent = '';
+  bot.classList.add('answer');
+  const sets = state.xray && d.answer_mode === 'rag' ? hits.map(h => new Set(contentWords(h.text))) : null;
+  const id = ++uid;
+  for (const para of text.split(/\n{2,}/).map(p => p.replace(/\s*\n\s*/g, ' ').trim()).filter(Boolean)) {
+    const p = document.createElement('p');
+    if (sets) {                         // X-Ray: tag each sentence with the chunk it came from
+      for (const sent of para.split(/(?<=[.!?])\s+/)) {
+        appendLinked(p, sent);
+        const i = bestChunk(sent, sets);
+        if (i >= 0) p.append(dot(i, hits[i], id));
+        p.append(' ');
+      }
+    } else {
+      appendLinked(p, para);
+    }
+    bot.append(p);
+  }
+  if (state.xray && hits.length && d.answer_mode !== 'plain') bot.append(xrayPanel(d, q, id));
+  return text;
+}
+
+// Resize: drag the top-left corner, or use the expand button
+(function () {
+  const panel = $('chatpanel'), grip = $('grip');
+  let big = false;
+  $('expand').onclick = () => {
+    big = !big;
+    panel.style.width = big ? 'min(900px, calc(100vw - 48px))' : '';
+    panel.style.height = big ? 'calc(100vh - 120px)' : '';
+  };
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const sx = e.clientX, sy = e.clientY, w = panel.offsetWidth, h = panel.offsetHeight;
+    const move = ev => {
+      panel.style.width = Math.max(300, Math.min(window.innerWidth - 32, w + (sx - ev.clientX))) + 'px';
+      panel.style.height = Math.max(320, Math.min(window.innerHeight - 40, h + (sy - ev.clientY))) + 'px';
+    };
+    const up = () => { grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up); };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  });
+})();
+ 
+// ===== Creative layer: state, X-Ray, compare, starters, chunk map, export =====
+const state = {xray: false, compare: false, opened: false, asked: false};
+const log = [];                         // chat transcript for Export
+let uid = 0;
+const PALETTE = ['#2563EB', '#B45309', '#0B7F5D', '#B8267F', '#7C4DDB'];
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+const escRe = w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const wordsOf = q => (String(q).toLowerCase().match(/[a-z0-9]{3,}/g) || []).filter(w => !STOP.has(w));
+const contentWords = t => (String(t).toLowerCase().match(/[a-z0-9]{4,}/g) || []).filter(w => !STOP.has(w));
+
+function updateSteps() {
+  const done = [indexed, indexed && state.opened, indexed && state.asked];
+  document.querySelectorAll('#steps li').forEach((li, i) => {
+    li.classList.toggle('done', done[i]);
+    li.classList.toggle('active', !done[i] && (i === 0 || done[i - 1]));
+  });
+  document.body.classList.toggle('nudge', indexed && !state.opened);
+}
+
+// --- tooltip shared by sentence dots ---
+function showTip(target, text) {
+  const tip = $('tip');
+  tip.textContent = text.length > 320 ? text.slice(0, 320) + '…' : text;
+  tip.style.display = 'block';
+  const r = target.getBoundingClientRect();
+  tip.style.left = Math.max(8, Math.min(r.left - 100, window.innerWidth - tip.offsetWidth - 8)) + 'px';
+  let top = r.top - tip.offsetHeight - 8;
+  if (top < 8) top = r.bottom + 8;
+  tip.style.top = top + 'px';
+}
+const hideTip = () => { $('tip').style.display = 'none'; };
+
+// --- text with <mark> around words from the question ---
+function markInto(parent, text, words) {
+  if (!words.length) { parent.append(text); return; }
+  const re = new RegExp('\\b(?:' + words.map(escRe).join('|') + ')\\w*', 'gi');
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    parent.append(text.slice(last, m.index));
+    parent.append(el('mark', '', m[0]));
+    last = m.index + m[0].length;
+  }
+  parent.append(text.slice(last));
+}
+
+// --- which chunk does a sentence come from? (word overlap) ---
+function bestChunk(sentence, sets) {
+  const cw = contentWords(sentence);
+  let best = -1, bestN = 1;
+  sets.forEach((set, i) => {
+    const n = cw.filter(w => set.has(w)).length;
+    if (n > bestN) { bestN = n; best = i; }
+  });
+  return best;
+}
+
+function dot(i, h, id) {
+  const b = el('button', 'dot', String(i + 1));
+  b.type = 'button';
+  b.style.background = PALETTE[i % 5];
+  b.setAttribute('aria-label', 'Came from chunk ' + (i + 1) + '. Click to open it.');
+  b.onmouseenter = b.onfocus = () => showTip(b, h.text);
+  b.onmouseleave = b.onblur = hideTip;
+  b.onclick = () => {
+    const d = document.getElementById('xr-' + id + '-' + i);
+    if (!d) return;
+    d.open = true;
+    d.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+    d.classList.add('flash');
+    setTimeout(() => d.classList.remove('flash'), 1000);
+  };
+  return b;
+}
+
+// --- the X-Ray panel under an answer ---
+function xrayPanel(d, q, id) {
+  const hits = d.hits || [];
+  const words = wordsOf(q);
+  const wrap = el('div', 'xray');
+  wrap.append(el('div', 'xr-title', '🔬 X-Ray: how this answer was found'));
+
+  const all = hits.map(h => String(h.text).toLowerCase()).join(' ');
+  const kws = el('div', 'kws');
+  kws.append(el('span', 'xr-note', 'Your question became these keywords:'));
+  for (const w of words) {
+    const hit = new RegExp('\\b' + escRe(w)).test(all);
+    const k = el('span', 'kw' + (hit ? '' : ' miss'), w);
+    k.title = hit ? 'Found in the retrieved chunks' : 'Not found in any retrieved chunk';
+    kws.append(k);
+  }
+  if (!words.length) kws.append(el('span', 'kw miss', '(none)'));
+  wrap.append(kws);
+
+  const scores = hits.map(h => Number(h.score) || 0);
+  const top = Math.max(0, ...scores), max = top || 1;
+  const level = top >= 0.30 ? ['strong', 'Strong evidence'] : top >= 0.12 ? ['some', 'Some evidence'] : ['weak', 'Weak evidence'];
+  const conf = el('div', 'kws');
+  conf.append(el('span', 'badge ' + level[0], level[1]),
+              el('span', 'xr-note', 'A hint from the top score, not proof. Scales differ between TF-IDF and semantic.'));
+  wrap.append(conf);
+
+  if (scores.length > 1 && top > 0) {
+    const second = scores[1] || 0.0001, ratio = top / second;
+    wrap.append(el('div', 'xr-note', ratio >= 1.5
+      ? `Clear winner: chunk 1 scores ${ratio.toFixed(1)}× higher than the runner-up.`
+      : 'Close call: the top chunks score almost the same. Try different chunk sizes and compare.'));
+  }
+
+  hits.forEach((h, i) => {
+    const det = el('details', 'xr-chunk');
+    det.id = 'xr-' + id + '-' + i;
+    const sum = el('summary');
+    const nm = el('span', 'nm', String(i + 1));
+    nm.style.background = PALETTE[i % 5];
+    const track = el('div', 'bar-track'), fill = el('div', 'bar-fill');
+    fill.style.background = PALETTE[i % 5];
+    fill.style.width = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = Math.max(2, scores[i] / max * 100) + '%'; }));
+    track.append(fill);
+    sum.append(nm, track, el('span', 'score', scores[i].toFixed(3)));
+    const body = el('div', 'xr-body');
+    body.append(el('div', 'xr-meta', `${h.source} · page ${h.page} · chunk ${h.chunk}`));
+    const p = el('div');
+    markInto(p, String(h.text), words);
+    body.append(p);
+    det.append(sum, body);
+    wrap.append(det);
+  });
+  return wrap;
+}
+
+// --- Copy button under an answer ---
+function addCopy(parent, text) {
+  const b = el('button', 'copy', '⧉ Copy');
+  b.type = 'button';
+  b.onclick = async () => {
+    try { await navigator.clipboard.writeText(text); b.textContent = '✓ Copied'; }
+    catch (e) { b.textContent = 'Copy failed'; }
+    setTimeout(() => { b.textContent = '⧉ Copy'; }, 1500);
+  };
+  parent.append(b);
+}
+
+// --- Compare mode: same question, with and without your documents ---
+async function compareAsk(q) {
+  say('user', q);
+  log.push('**You:** ' + q);
+  const bot = say('bot compare', 'Asking twice: with your documents and without them…');
+  $('send').disabled = true;
+  try {
+    const base = {question: q, k: Number($('k').value), model: $('model').value, history: turns.slice(-4)};
+    const [r, p] = await Promise.all([api('/api/ask', {...base, answer_mode: 'rag'}),
+                                      api('/api/ask', {...base, answer_mode: 'plain'})]);
+    bot.textContent = '';
+    bot.classList.add('answer');
+    const grid = el('div', 'cmp');
+    const left = el('div'), right = el('div');
+    left.append(el('h4', '', '📄 With your documents'));
+    right.append(el('h4', '', '🧠 Without documents (may guess)'));
+    let ragText;
+    if (dontKnow(r)) {
+      ragText = 'Not found in your documents.';
+      left.append(el('p', 'miss', ragText));
+    } else {
+      ragText = renderAnswer(left.appendChild(el('div')), r, q);
+      addCopy(left, ragText);
+    }
+    const plainText = renderAnswer(right.appendChild(el('div')), p, q);
+    addCopy(right, plainText);
+    grid.append(left, right);
+    bot.append(grid);
+    turns.push({q, a: ragText});
+    log.push('**Guide, with documents:** ' + ragText, '**Guide, without documents:** ' + plainText);
+    state.asked = true; updateSteps();
+  } catch (e) {
+    bot.textContent = 'Error: ' + e.message;
+    bot.classList.add('error');
+  } finally {
+    $('send').disabled = false;
+    $('question').focus();
+    $('messages').scrollTop = $('messages').scrollHeight;
+  }
+}
+
+// --- Starter questions as chips ---
+function keywordsOf(text, n = 2) {
+  const freq = new Map();
+  for (const w of (String(text).toLowerCase().match(/[a-z]{5,}/g) || [])) if (!STOP.has(w)) freq.set(w, (freq.get(w) || 0) + 1);
+  return [...freq.entries()].sort((a, b) => b[1] - a[1] || b[0].length - a[0].length).slice(0, n).map(x => x[0]).join(' and ');
+}
+
+function showStarters() {
+  document.querySelectorAll('.starters').forEach(n => n.remove());
+  const box = el('div', 'msg sys starters', 'Not sure what to ask? Try one of these:');
+  const row = el('div', 'chips');
+  const qs = ['Give me a quick summary', 'Are there any useful links?', ...[...new Set(topics)].slice(0, 3).map(t => 'Tell me about ' + t)];
+  for (const q of qs) row.append(chip(q, () => { box.remove(); ask(q); }));
+  box.append(row);
+  $('messages').append(box);
+  $('messages').scrollTop = $('messages').scrollHeight;
+}
+
+// --- Chunk map instead of raw JSON ---
+function renderChunkMap(d) {
+  const map = $('chunkmap'), box = $('chunktext');
+  map.textContent = '';
+  box.textContent = 'Hover or tap a block to read that chunk.';
+  const chunks = d.preview || [];
+  chunks.forEach((c, i) => {
+    const words = String(c.text || '').split(/\s+/).filter(Boolean).length || 1;
+    const b = el('button', 'cblock', String(i + 1));
+    b.type = 'button';
+    b.style.background = PALETTE[i % 5];
+    b.style.flexGrow = words;
+    b.title = `Chunk ${i + 1} · ${words} words`;
+    const show = () => { box.textContent = `Chunk ${i + 1} · ${c.source} · ${words} words\n\n${c.text}`; };
+    b.onmouseenter = b.onfocus = b.onclick = show;
+    map.append(b);
+  });
+  $('chunkinfo').textContent = `Showing the first ${chunks.length} of ${d.chunks} chunks. Block width = words in the chunk; neighbouring chunks share the overlap you set.`;
+}
+
+// --- Export chat as Markdown ---
+function exportChat() {
+  if (!log.length) { say('sys', 'Nothing to export yet. Ask a question first.'); return; }
+  const md = '# Interactive Guide chat\n\n' + log.join('\n\n') + '\n';
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([md], {type: 'text/markdown'}));
+  a.download = 'interactive-guide-chat.md';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function toggle(btn, key, onMsg, offMsg) {
+  state[key] = !state[key];
+  btn.setAttribute('aria-pressed', String(state[key]));
+  say('sys', state[key] ? onMsg : offMsg);
+}
+$('tx').onclick = () => toggle($('tx'), 'xray', 'X-Ray on: new answers will show keywords, score bars and numbered dots for each sentence.', 'X-Ray off.');
+$('tc').onclick = () => toggle($('tc'), 'compare', 'Compare on: each question is answered with and without your documents.', 'Compare off.');
+$('tex').onclick = exportChat;
+
+async function ask(text, modeOverride, quiet) {
+  const q = (typeof text === 'string' ? text : $('question').value).trim();
+  if (!q) return;
+  if (!indexed) { say('sys', 'Build an index first: press "← Back" and use the sample or your own files.'); return; }
+  $('question').value = '';
+  if (state.compare && !modeOverride) return compareAsk(q);
+  if (!quiet) { say('user', q); log.push('**You:** ' + q); }
+  const bot = say('bot', 'Thinking… model requests can take a minute on CPU.');
+  $('send').disabled = true;
+  try {
+    const d = await api('/api/ask', {question: q, k: Number($('k').value), answer_mode: modeOverride || $('answer_mode').value,
+                                     model: $('model').value, history: turns.slice(-4)});
+    if (dontKnow(d)) {
+      offerHelp(bot, q);
+      log.push('**Guide:** Not found in your documents.');
+    } else {
+      const shown = renderAnswer(bot, d, q);
+      turns.push({q, a: shown});
+      log.push('**Guide:** ' + shown);
+      addCopy(bot, shown);
+    }
+    state.asked = true; updateSteps();
+  } catch (e) {
+    bot.textContent = 'Error: ' + e.message;
+    bot.classList.add('error');
+  } finally {
+    $('send').disabled = false;
+    $('question').focus();
+    $('messages').scrollTop = $('messages').scrollHeight;
+  }
+}
+ 
+$('sample').onclick = () => buildIndex(true);
+$('upload').onclick = () => buildIndex(false);
+$('chatform').onsubmit = e => { e.preventDefault(); ask(); };
+$('question').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); ask(); }
+});
+$('clear').onclick = () => { turns.length = 0; log.length = 0; $('messages').textContent = ''; say('sys', 'Chat cleared. The index is still loaded.'); };
+ 
+// Start: greet, and pick up an index the server already holds
+say('sys', 'Hi, I\'m your Interactive Guide! Build an index on the main page (sample or your own files), then ask me questions about it.');
+fetch('/api/status').then(r => r.json()).then(s => {
+  if (s.indexed) { indexed = true; say('sys', `An index with ${s.chunks} chunks is already loaded.`); showStarters(); updateSteps(); }
+}).catch(() => {});
+</script>
+</body>
+</html>

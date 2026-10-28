@@ -1,15 +1,41 @@
-"""Local single-user teaching server. Run: python app.py"""
+"""Local single-user teaching server. Run: python app.py
+The left side of the page builds the index; the right side is a chat that uses it.
+Images are turned into text by a local Ollama vision model, then indexed like any document.
+"""
 import argparse
 import base64
 import io
 import json
+import os
 import time
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from rag import Index, build_prompt, generate, citation_check
+from rag import Index, build_prompt, generate, citation_check, ollama_post
 
 ROOT = Path(__file__).resolve().parent
+VISION_MODEL = os.environ.get('VISION_MODEL', 'qwen2.5vl:3b')  # any Ollama vision model
+IMAGE_SUFFIXES = ('.png', '.jpg', '.jpeg', '.webp')
+HISTORY_TURNS = 4
 STATE = {'index': None}
+
+
+def describe_image(raw):
+    """Ask the local vision model to describe an image and transcribe any visible text."""
+    payload = {
+        'model': VISION_MODEL, 'stream': False, 'keep_alive': 0,
+        'messages': [{
+            'role': 'user',
+            'content': 'Describe this image in detail. Transcribe ALL visible text exactly, '
+                       'and describe any tables, charts or diagrams.',
+            'images': [base64.b64encode(raw).decode()],
+        }],
+    }
+    try:
+        return ollama_post('/api/chat', payload)['message']['content']
+    except Exception as exc:
+        raise RuntimeError('Image reading failed. Is Ollama running and is "%s" pulled? (%s)'
+                           % (VISION_MODEL, exc)) from exc
+
 
 def read_uploads(files):
     docs, warnings = [], []
@@ -23,7 +49,7 @@ def read_uploads(files):
             try:
                 from pypdf import PdfReader
             except ImportError as exc:
-                raise ValueError('PDF needs pypdf: python -m pip install -r requirements.txt') from exc
+                raise ValueError('PDF needs pypdf: python -m pip install pypdf') from exc
             reader = PdfReader(io.BytesIO(raw))
             if reader.is_encrypted:
                 raise ValueError('Use an unencrypted PDF.')
@@ -35,11 +61,30 @@ def read_uploads(files):
                     docs.append({'source': source, 'page': number, 'text': text})
                 else:
                     warnings.append('%s page %s has no text; OCR is not included.' % (source, number))
+        elif suffix in IMAGE_SUFFIXES:
+            text = describe_image(raw)
+            if text.strip():
+                docs.append({'source': source, 'page': 1, 'text': text})
+            else:
+                warnings.append('%s: the vision model returned no text.' % source)
         else:
-            raise ValueError('Only UTF-8 TXT, MD, or text-based PDF files are supported.')
+            raise ValueError('Supported files: TXT, MD, text-based PDF, PNG, JPG, WEBP.')
     if sum(len(d['text']) for d in docs) > 500000:
         raise ValueError('Workshop limit: 500,000 extracted characters.')
     return docs, warnings
+
+
+def clean_history(raw):
+    """Accept only the last few {q, a} pairs sent by the page, trimmed to a safe size."""
+    turns = []
+    if isinstance(raw, list):
+        for turn in raw[-HISTORY_TURNS:]:
+            if isinstance(turn, dict):
+                q, a = str(turn.get('q', ''))[:500], str(turn.get('a', ''))[:500]
+                if q and a:
+                    turns.append((q, a))
+    return turns
+
 
 class Handler(BaseHTTPRequestHandler):
     def send(self, data, status=200, content_type='application/json'):
@@ -93,10 +138,18 @@ class Handler(BaseHTTPRequestHandler):
                 question = str(body.get('question', '')).strip()
                 if not question or len(question) > 1500:
                     raise ValueError('Question must contain 1..1500 characters.')
-                hits = idx.search(question, int(body.get('k', 3)))
-                mode = body.get('answer_mode', 'evidence')
+                mode = body.get('answer_mode', 'rag')
                 if mode not in ('evidence', 'rag', 'plain'):
                     raise ValueError('Unknown answer mode.')
+                history = clean_history(body.get('history'))
+                # Chat memory: the previous question helps retrieval for follow-ups like "and for 2nd year?"
+                search_text = (history[-1][0] + ' ' if history else '') + question
+                hits = idx.search(search_text, int(body.get('k', 3)))
+                chat_question = question
+                if history:
+                    chat_question = ('Previous conversation:\n' +
+                                     '\n'.join('User: %s\nAssistant: %s' % t for t in history) +
+                                     '\n\nCurrent question: ' + question)
                 # Zero keyword overlap is a useful baseline rejection; semantic scores have no universal cutoff.
                 no_overlap = idx.mode == 'keyword' and hits[0]['score'] <= 0
                 if mode == 'evidence':
@@ -108,9 +161,9 @@ class Handler(BaseHTTPRequestHandler):
                     model = body.get('model', 'qwen2.5:1.5b')
                     if model not in ('qwen2.5:1.5b', 'qwen2.5:0.5b'):
                         raise ValueError('Choose one of the provided local generation models.')
-                    answer = generate(question, hits, model, use_rag=mode == 'rag')
+                    answer = generate(chat_question, hits, model, use_rag=mode == 'rag')
                 result = {'answer': answer, 'hits': hits, 'answer_mode': mode,
-                          'prompt': question if mode == 'plain' else build_prompt(question, hits),
+                          'prompt': chat_question if mode == 'plain' else build_prompt(chat_question, hits),
                           'citations': citation_check(answer, hits) if mode == 'rag' else None}
             else:
                 return self.send({'error': 'Not found'}, 404)
@@ -120,6 +173,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send({'error': str(exc)}, 400)
         except Exception as exc:
             self.send({'error': str(exc)}, 502)
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
